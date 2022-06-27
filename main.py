@@ -8,6 +8,20 @@ ser = serial.Serial(port='COM4', baudrate=921600, timeout=1, parity=serial.PARIT
                     bytesize=serial.EIGHTBITS, rtscts=1)
 
 
+def validity_check(signal):
+    # ASCII code for "<" is 60, and for ">" it is 62
+    # If the message starts with "<<" and ends with ">>"
+    if signal[0] == 60 and signal[1] == 60 and signal[-1] == 62 and signal[-2] == 62:
+        checksum = signal[2] ^ signal[3] ^ signal[4] ^ signal[5] ^ signal[6] ^ signal[7] ^ signal[8] ^ signal[9]
+        # If the XOR value equals the value of the checksum byte
+        if checksum == signal[10]:
+            return True
+        else:
+            return False
+    else:
+        return False
+
+
 def conversion_AD_units_into_voltage(signal, test_mode):
     reference_v = 4.5
     amp_gain = 24
@@ -31,10 +45,11 @@ def animation(i, signal1, signal2, step, test_mode, win=None, over=None):
         i += 1
     for j in range(step):
         data = ser.read(13)
-        result = conversion_AD_units_into_voltage(data, test)
-        signal1.append(result[0])
-        if test_mode:
-            signal2.append(data[8])
+        if validity_check(data):
+            result = conversion_AD_units_into_voltage(data, test)
+            signal1.append(result[0])
+            if test_mode:
+                signal2.append(data[8])
 
     tr = np.linspace(0, i+1, len(signal1))
     ax2.clear()
@@ -51,23 +66,28 @@ def animation(i, signal1, signal2, step, test_mode, win=None, over=None):
 
 
 if __name__ == '__main__':
+    # Setting up constants
     power_supply = False
     acquisition = False
     test = False
+    Fs = 0
 
     # Turn ON power supply for EMG amplifiers
     if not acquisition and not power_supply:
         # ser.write(b'<<CH1:ON>>\n')
         # ser.write(b'<<CH2:ON>>\n')
         ser.write(b'<<CHs:ON>>\n')
-        ser.read(6)
-        power_supply = True
+        status = ser.read(6)
+        if status == b'<<OK>>':
+            power_supply = True
 
     if not acquisition and power_supply:
         # Set sampling frequency
         # ser.write(b'<<F:250>>\n')
         ser.write(b'<<F:500>>\n')
-        ser.read(6)
+        status = ser.read(6)
+        if status == b'<<OK>>':
+            Fs = 500
 
         # Turn TEST mode ON
         ser.write(b'<<TEST>>\n')
@@ -82,7 +102,10 @@ if __name__ == '__main__':
                 emg_ch1_data = []
                 counter = []
 
-                t = np.linspace(0, 10, 5000)
+                # Online mode
+                duration = 10
+                length = duration * Fs
+                t = np.linspace(0, duration, length)
                 fig_rt, (ax2, ax3) = plt.subplots(2, 1)
                 smpl_per_sec = int(len(t) // t[-1])
                 ani = FuncAnimation(fig_rt, animation, fargs=(emg_ch1_data, counter, smpl_per_sec, test), frames=9,
@@ -94,9 +117,9 @@ if __name__ == '__main__':
                     ser.write(b'<<STOP>>\n')
                     ser.reset_output_buffer()
                     time.sleep(0.1)
-                    acquisition = False
                     while ser.read(13) != b'<<OK>>':
                         ser.read(13)
+                    acquisition = False
 
                 # Offline mode
                 fig, (ax0, ax1) = plt.subplots(2, 1)
@@ -125,27 +148,29 @@ if __name__ == '__main__':
 
                 data = ser.read(13)
                 if data == b'<<\x00\x00\x11\x00\x00\x00\x01ZJ>>':  # First sample in DATA 1d
-                    length = 38070  # Number of samples in DATA 1d
-                    duration = 90  # Signal duration
+                    duration = 90
+                    length = duration * Fs
                     title = "EMG DATA 1d"
                 elif data == b'<<\x00\x00%\x00\x00\x00\x01Y}>>':  # First sample in DATA 2d
-                    length = 14388  # Number of samples in DATA 2d
-                    duration = 33  # Signal duration
+                    duration = 33
+                    length = duration * Fs
                     title = "EMG DATA 2d"
                 elif data == b'<<\x00\x00\x0f\x00\x00\x00\x01VX>>':  # First sample in DATA 3d
-                    length = 7500  # Number of samples in DATA 3d
-                    duration = 15  # Signal duration
+                    duration = 15
+                    length = duration * Fs
                     title = "EMG DATA 3d"
                 else:
                     length = 0
                     duration = 0
                     title = ""
 
+                # Setup for envelope calculation
                 rms_ch1 = np.zeros(length)
                 rms_ch2 = np.zeros(length)
                 window = length//150  # Number of samples based on which RMS is calculated
                 overlap = window//2  # Number of points in which two consecutive windows overlap
 
+                # Online mode
                 t = np.linspace(0, duration, length)
                 fig_rt, (ax2, ax3) = plt.subplots(2, 1)
                 smpl_per_sec = int(len(t) // duration)
@@ -156,12 +181,13 @@ if __name__ == '__main__':
                 # Stop EMG acquisition
                 if acquisition and power_supply:
                     ser.write(b'<<STOP>>\n')
-                    acquisition = False
                     ser.reset_output_buffer()
                     time.sleep(0.1)
                     while ser.read(13) != b'<<OK>>':
                         ser.read(13)
+                    acquisition = False
 
+                # Offline mode
                 t = np.linspace(0, duration, length)
                 fig, (ax0, ax1) = plt.subplots(2, 1)
                 ax0.plot(t, ch1_data, linewidth=0.5)
@@ -181,4 +207,6 @@ if __name__ == '__main__':
         # ser.write(b'<<CH1:OFF>>\n')
         # ser.write(b'<<CH2:OFF>>\n')
         ser.write(b'<<CHs:OFF>>\n')
-        power_supply = False
+        status = ser.read(6)
+        if status == b'<<OK>>':
+            power_supply = False
