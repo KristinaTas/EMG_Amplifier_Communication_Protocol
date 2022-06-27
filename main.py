@@ -4,7 +4,8 @@ from matplotlib.animation import FuncAnimation
 import numpy as np
 import time
 
-ser = serial.Serial(port='COM6', baudrate=921600, timeout=1, parity=serial.PARITY_NONE, bytesize=serial.EIGHTBITS, rtscts=1)
+ser = serial.Serial(port='COM4', baudrate=921600, timeout=1, parity=serial.PARITY_NONE,
+                    bytesize=serial.EIGHTBITS, rtscts=1)
 
 
 def conversion_AD_units_into_voltage(signal, test_mode):
@@ -25,16 +26,28 @@ def conversion_AD_units_into_voltage(signal, test_mode):
     return C1_AD * scale_factor_uV, C2_AD * scale_factor_uV
 
 
-def animation(i, x_axis, signal1, signal2, step, test_mode):
+def animation(i, signal1, signal2, step, test_mode, win=None, over=None):
+    if len(signal1) > 1:
+        i += 1
+    for j in range(step):
+        data = ser.read(13)
+        result = conversion_AD_units_into_voltage(data, test)
+        signal1.append(result[0])
+        if test_mode:
+            signal2.append(data[8])
+
+    tr = np.linspace(0, i+1, len(signal1))
     ax2.clear()
     ax3.clear()
-    tr = x_axis[:step*(i+1)]
-    ax2.plot(tr, signal1[:step*(i+1)], linewidth=0.5)
+    ax2.plot(tr, signal1, linewidth=0.5)
     if test_mode:
-        ax3.plot(tr, signal2[:step*(i+1)], linewidth=0.5)
+        ax3.plot(tr, signal2, linewidth=0.5)
     else:
-        ax3.plot(tr, signal1[:step*(i+1)], linewidth=0.5)
-        ax3.plot(tr, signal2[:step*(i+1)], linewidth=1)
+        ax3.plot(tr, signal1, linewidth=0.5)
+        for k in range(0, len(signal1) - win//2, win - over):
+            rms = np.sqrt(np.mean(np.abs(signal1[k:k + win]) ** 2))
+            signal2[k:k + win] = rms * np.ones(len(signal2[k:k + win]))
+        ax3.plot(tr, signal2[:len(tr)], linewidth=1)
 
 
 if __name__ == '__main__':
@@ -44,17 +57,17 @@ if __name__ == '__main__':
 
     # Turn ON power supply for EMG amplifiers
     if not acquisition and not power_supply:
-        ser.write(b'<<CH1:ON>>\n')
-        ser.write(b'<<CH2:ON>>\n')
+        # ser.write(b'<<CH1:ON>>\n')
+        # ser.write(b'<<CH2:ON>>\n')
         ser.write(b'<<CHs:ON>>\n')
-        ser.read(18)
+        ser.read(6)
         power_supply = True
 
     if not acquisition and power_supply:
         # Set sampling frequency
-        ser.write(b'<<F:250>>\n')
+        # ser.write(b'<<F:250>>\n')
         ser.write(b'<<F:500>>\n')
-        ser.read(12)
+        ser.read(6)
 
         # Turn TEST mode ON
         ser.write(b'<<TEST>>\n')
@@ -69,27 +82,23 @@ if __name__ == '__main__':
                 emg_ch1_data = []
                 counter = []
 
-                for i in range(5000):
-                    data = ser.read(13)
-                    result = conversion_AD_units_into_voltage(data, test)
-                    emg_ch1_data.append(result[0])
-                    counter.append(data[8])
+                t = np.linspace(0, 10, 5000)
+                fig_rt, (ax2, ax3) = plt.subplots(2, 1)
+                smpl_per_sec = int(len(t) // t[-1])
+                ani = FuncAnimation(fig_rt, animation, fargs=(emg_ch1_data, counter, smpl_per_sec, test), frames=9,
+                                    interval=1000, repeat=False)
+                plt.show()
 
                 # Stop EMG acquisition
                 if acquisition and power_supply:
                     ser.write(b'<<STOP>>\n')
                     ser.reset_output_buffer()
-                    time.sleep(0.1)  # A delay that provides enough time for the output buffer to reset
+                    time.sleep(0.1)
                     acquisition = False
-                    ser.read(6)
+                    while ser.read(13) != b'<<OK>>':
+                        ser.read(13)
 
                 # Offline mode
-                t = np.linspace(0, 10, 5000)
-                fig_rt, (ax2, ax3) = plt.subplots(2, 1)
-                smpl_per_sec = int(len(t) // t[-1])
-                ani = FuncAnimation(fig_rt, animation, fargs=(t, emg_ch1_data, counter, smpl_per_sec, test), frames=10,
-                                    interval=1000, repeat=False)
-                plt.show()
                 fig, (ax0, ax1) = plt.subplots(2, 1)
                 ax0.plot(t, emg_ch1_data, linewidth=0.5)
                 ax0.set_title('EMG CHANNEL 1 DATA')
@@ -116,15 +125,15 @@ if __name__ == '__main__':
 
                 data = ser.read(13)
                 if data == b'<<\x00\x00\x11\x00\x00\x00\x01ZJ>>':  # First sample in DATA 1d
-                    length = 38036  # Number of samples in DATA 1d
+                    length = 38070  # Number of samples in DATA 1d
                     duration = 90  # Signal duration
                     title = "EMG DATA 1d"
                 elif data == b'<<\x00\x00%\x00\x00\x00\x01Y}>>':  # First sample in DATA 2d
-                    length = 14318  # Number of samples in DATA 2d
+                    length = 14388  # Number of samples in DATA 2d
                     duration = 33  # Signal duration
                     title = "EMG DATA 2d"
                 elif data == b'<<\x00\x00\x0f\x00\x00\x00\x01VX>>':  # First sample in DATA 3d
-                    length = 7320  # Number of samples in DATA 3d
+                    length = 7500  # Number of samples in DATA 3d
                     duration = 15  # Signal duration
                     title = "EMG DATA 3d"
                 else:
@@ -132,39 +141,28 @@ if __name__ == '__main__':
                     duration = 0
                     title = ""
 
-                result = conversion_AD_units_into_voltage(data, test)
-                ch1_data.append(result[0])
-                ch2_data.append(result[1])
-                for i in range(length-1):
-                    data = ser.read(13)
-                    result = conversion_AD_units_into_voltage(data, test)
-                    ch1_data.append(result[0])
-                    ch2_data.append(result[1])
-
                 rms_ch1 = np.zeros(length)
                 rms_ch2 = np.zeros(length)
                 window = length//150  # Number of samples based on which RMS is calculated
                 overlap = window//2  # Number of points in which two consecutive windows overlap
-                for i in range(0, len(ch1_data) - window//2, window - overlap):
-                    rms1 = np.sqrt(np.mean(np.abs(ch1_data[i:i + window - 1]) ** 2))
-                    rms_ch1[i:i + window - 1] = rms1 * np.ones(len(rms_ch1[i:i + window - 1]))
-                    rms2 = np.sqrt(np.mean(np.abs(ch2_data[i:i + window - 1]) ** 2))
-                    rms_ch2[i:i + window - 1] = rms2 * np.ones(len(rms_ch2[i:i + window - 1]))
+
+                t = np.linspace(0, duration, length)
+                fig_rt, (ax2, ax3) = plt.subplots(2, 1)
+                smpl_per_sec = int(len(t) // duration)
+                ani = FuncAnimation(fig_rt, animation, fargs=(ch1_data, rms_ch1, smpl_per_sec, test, window, overlap),
+                                    frames=duration-1, interval=1000, repeat=False,)
+                plt.show()
 
                 # Stop EMG acquisition
                 if acquisition and power_supply:
                     ser.write(b'<<STOP>>\n')
-                    ser.reset_output_buffer()
-                    time.sleep(0.1)  # A delay that provides enough time for the output buffer to reset
                     acquisition = False
-                    ser.read(6)
+                    ser.reset_output_buffer()
+                    time.sleep(0.1)
+                    while ser.read(13) != b'<<OK>>':
+                        ser.read(13)
 
                 t = np.linspace(0, duration, length)
-                fig_rt, (ax2, ax3) = plt.subplots(2, 1)
-                smpl_per_sec = int(len(t) // t[-1])
-                ani = FuncAnimation(fig_rt, animation, fargs=(t, ch1_data, rms_ch1, smpl_per_sec, test), frames=duration,
-                                    interval=1000, repeat=False)
-                plt.show()
                 fig, (ax0, ax1) = plt.subplots(2, 1)
                 ax0.plot(t, ch1_data, linewidth=0.5)
                 ax0.set_xlabel('Time [s]')
@@ -180,7 +178,7 @@ if __name__ == '__main__':
 
     # Turn OFF power supply for EMG amplifiers
     if not acquisition and power_supply:
-        ser.write(b'<<CH1:OFF>>\n')
-        ser.write(b'<<CH2:OFF>>\n')
+        # ser.write(b'<<CH1:OFF>>\n')
+        # ser.write(b'<<CH2:OFF>>\n')
         ser.write(b'<<CHs:OFF>>\n')
         power_supply = False
